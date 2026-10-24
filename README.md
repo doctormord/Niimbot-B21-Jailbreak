@@ -16,7 +16,6 @@ The patcher supports firmware 3.09, 3.10, 3.11, 3.12 and 3.13.
    python3 tools/b21patch.py B21_Pro_3.10.bin
    # -> B21_Pro_3.10_noprime10_crcfix.bin
    ```
-   Pre-built images are attached to the [releases](../../releases).
 3. Flash it with the firmware updater on [niim.blue](https://niim.blue) (USB or Bluetooth), or
    with the [B21Pro app](https://github.com/doctormord/B21Pro-Simple-Printing-and-Photobooth-App)
    over Bluetooth (long-press the title to open the debug console). Enter the version that matches
@@ -143,16 +142,6 @@ Official:
 bf2405c96f0e0c137ef01f9b469309076792410e17e1ed82b88efd751ee61c0f  B21_Pro_3.11.bin
 5a9bd9ca70bf38561d26a9daca986f5e4b9e2c5ce16d8ee24a4baf5e22945cb5  B21_Pro_3.12.bin
 b0f4c40f4c0071a0addead4d862b4fc542121ce76fabf9f15e55258e792de1b6  B21_Pro_3.13.bin
-```
-
-Patched with the default density (`b21patch.py` output, identical to the release assets):
-
-```
-44080ba6f3c03863307dfa87e4003640db106d26cc0c4cb8e580f80c8edae502  B21_Pro_3.09_noprime10_crcfix.bin
-7b52735961bcbb840139d9c62946904afaf4ee0487ae6152019d78df36776034  B21_Pro_3.10_noprime10_crcfix.bin
-0b52fda8827545a51de783cf139d61e0a3c52b50c0146c523a9814e58f752f40  B21_Pro_3.11_noprime10_crcfix.bin
-f1b923309460ba4ada114f075d92336df3132613cca8a6c1bbfff3582796d188  B21_Pro_3.12_noprime10_crcfix.bin
-4a813e93a17af1f7ced9246ed352bd1a648bfe04e1b55489d26407f57b396304  B21_Pro_3.13_noprime10_crcfix.bin
 ```
 
 ## Repository
