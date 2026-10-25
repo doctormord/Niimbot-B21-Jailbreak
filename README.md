@@ -50,14 +50,16 @@ Three changes, all located by byte signature so the same tool works across versi
    - 3.12–3.13: `cbnz r5, <fail>` → `nop`
 2. **Default density.** Without a tag nothing writes `roll+0x67`. The call at the end of the
    normalizer is redirected through a 20-byte code cave in zero padding:
-   ```
+   
+```asm
    ldrb.w r0, [r4, #0x67]
    cbnz   r0, 1f            ; tag provided a density: keep it
    movs   r0, #0x10         ; otherwise use the default
    strb.w r0, [r4, #0x67]
 1: bl     <original callee>
    b.w    <back>
-   ```
+```
+
    Energy still goes through the stock formula and cap, so strobe timing stays consistent.
 3. **CRC-neutral image.** See below.
 
