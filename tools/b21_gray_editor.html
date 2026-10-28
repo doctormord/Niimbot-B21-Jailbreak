@@ -1,0 +1,311 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>B21 Pro Gray Editor</title>
+<style>
+/* Layout: control panel left, live chart right. Thermal-instrument look: near-black, amber strobe accent, mono numbers. */
+:root{
+  --bg:#14120f; --panel:#1c1a16; --panel2:#232019; --line:#322d24;
+  --fg:#efe9df; --mut:#a79e8d; --amber:#ffb24a; --amber2:#ff8a3c;
+  --blue:#6fb3ff; --red:#ff6b6b; --ok:#8fd694;
+  --sans:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+  --mono:ui-monospace,"SF Mono","JetBrains Mono",Menlo,Consolas,monospace;
+}
+*{box-sizing:border-box}
+html,body{margin:0}
+body{background:var(--bg);color:var(--fg);font:15px/1.5 var(--sans);
+  padding:clamp(16px,3vw,34px);max-width:1180px;margin:0 auto;-webkit-font-smoothing:antialiased}
+h1{font-size:clamp(22px,3.4vw,30px);margin:0;letter-spacing:-.01em;font-weight:650}
+h2{font-size:13px;text-transform:uppercase;letter-spacing:.09em;color:var(--mut);margin:0 0 12px;font-weight:600}
+.sub{color:var(--mut);margin:6px 0 0;max-width:64ch}
+.mono{font-family:var(--mono)}
+header{border-bottom:1px solid var(--line);padding-bottom:18px;margin-bottom:22px}
+sub{font-size:.72em}
+
+#drop{border:1.5px dashed var(--line);border-radius:14px;background:var(--panel);
+  padding:26px 20px;text-align:center;cursor:pointer;transition:border-color .15s,background .15s}
+#drop:hover,#drop.hot{border-color:var(--amber);background:var(--panel2)}
+#drop strong{color:var(--fg)}
+#drop .hint{color:var(--mut);font-size:13.5px;margin-top:6px}
+input[type=file]{display:none}
+
+.status{display:flex;flex-wrap:wrap;gap:10px 22px;margin:16px 0 4px;font-family:var(--mono);font-size:13px}
+.status b{color:var(--mut);font-weight:500}
+.pill{display:inline-flex;align-items:center;gap:7px;padding:3px 10px;border-radius:999px;font-family:var(--mono);font-size:12.5px}
+.pill.ok{background:rgba(143,214,148,.13);color:var(--ok)}
+.pill.err{background:rgba(255,107,107,.14);color:var(--red)}
+.pill.warn{background:rgba(255,178,74,.14);color:var(--amber)}
+.pill.mode{background:rgba(111,179,255,.14);color:var(--blue)}
+
+.grid{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1.05fr);gap:22px;margin-top:22px}
+@media(max-width:820px){.grid{grid-template-columns:1fr}}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:18px}
+
+table{width:100%;border-collapse:collapse;font-family:var(--mono);font-size:13px}
+th,td{text-align:right;padding:4px 6px}
+th{color:var(--mut);font-weight:500;border-bottom:1px solid var(--line)}
+td:first-child,th:first-child{text-align:left;color:var(--mut)}
+td input{width:62px;background:var(--panel2);border:1px solid var(--line);color:var(--fg);
+  font-family:var(--mono);font-size:13px;border-radius:7px;padding:4px 7px;text-align:right}
+td input:focus{outline:none;border-color:var(--amber)}
+td input:disabled{color:var(--mut);opacity:.7}
+tr.l15 td{color:var(--mut)}
+.sum{color:var(--amber)}
+
+.presets{display:flex;gap:8px;flex-wrap:wrap;margin-top:12px}
+.presetbtn{font:inherit;font-size:13px;border:1px solid var(--line);background:var(--panel2);
+  color:var(--fg);border-radius:8px;padding:6px 12px;cursor:pointer;font-family:var(--mono)}
+.presetbtn:hover{border-color:var(--amber)}
+.presetbtn.on{border-color:var(--amber);background:rgba(255,178,74,.12);color:var(--amber)}
+
+.row{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin:14px 0}
+.row label{min-width:150px;color:var(--mut)}
+input[type=range]{flex:1;min-width:140px;accent-color:var(--amber)}
+.val{font-family:var(--mono);min-width:54px;text-align:right;color:var(--fg)}
+
+button.build{font:inherit;font-weight:600;font-size:15px;border:none;border-radius:11px;cursor:pointer;
+  background:linear-gradient(180deg,var(--amber),var(--amber2));color:#241400;padding:13px 22px;width:100%;margin-top:4px}
+button.build:disabled{opacity:.4;cursor:not-allowed;filter:grayscale(.4)}
+.note{color:var(--mut);font-size:12.5px;margin-top:10px}
+canvas{width:100%;height:auto;display:block;border-radius:10px;background:var(--panel2)}
+.legend{display:flex;gap:16px;flex-wrap:wrap;font-size:12.5px;color:var(--mut);margin-top:10px}
+.legend i{display:inline-block;width:12px;height:3px;border-radius:2px;vertical-align:middle;margin-right:6px}
+.hidden{display:none}
+footer{margin-top:26px;border-top:1px solid var(--line);padding-top:16px;color:var(--mut);font-size:12.5px}
+code{font-family:var(--mono);background:var(--panel2);padding:1px 5px;border-radius:5px;font-size:.92em}
+</style>
+</head>
+<body>
+<header>
+  <h1>B21 Pro Gray Editor</h1>
+  <p class="sub">Load a <b>noprime-patched</b> base (<span class="mono">…_noprime10_crcfix.bin</span> from
+  <span class="mono">b21patch.py</span>, or any gray variant — they all have it), choose the gray profile and
+  load compensation, and write a flashable image back out. This tool only does the gray part; the no-name
+  full-heat (noprime) part must already be in the base, or tagless rolls still won't print. For 3.09–3.11 it
+  builds the <b>RFID-aware</b> firmware (genuine NIIMBOT rolls keep the stock curve, no-name / tagless rolls get
+  your curve); 3.12/3.13 get an always-spread curve. Header byte-identical, body CRC re-solved, nothing uploaded.</p>
+</header>
+
+<label id="drop" for="file">
+  <strong>Drop a <span class="mono">B21_Pro_…bin</span> here, or click to choose</strong>
+  <div class="hint">Official image or any <span class="mono">…_crcfix.bin</span> — 3.09 / 3.10 / 3.11 / 3.12 / 3.13</div>
+  <input type="file" id="file" accept=".bin">
+</label>
+
+<div id="status" class="status hidden"></div>
+
+<div id="app" class="grid hidden">
+  <div class="card">
+    <h2>Profile</h2>
+    <div class="presets" id="presets"></div>
+    <div class="note" id="presetnote"></div>
+
+    <h2 style="margin-top:22px">Gray curve — increment c<sub>L</sub></h2>
+    <table id="curve"><thead><tr><th>Level</th><th>c&#8202;<sub>L</sub></th><th>Σ sum</th><th>Σ + load</th></tr></thead><tbody></tbody></table>
+    <div class="note">Darkness tracks the cumulative sum Σ(c<sub>0</sub>…c<sub>L</sub>) — the splitter is thermometric,
+      so a level-L dot fires in all planes 0…L. Constant increments give an even darkness ramp. L15 is full black — left alone.</div>
+
+    <h2 style="margin-top:22px">Load compensation</h2>
+    <div class="row">
+      <label>net factor</label>
+      <input type="range" id="load" min="0" max="3" step="0.25" value="2">
+      <span class="val mono" id="loadval">×2.00</span>
+    </div>
+    <div class="note">Scales the 7 per-level load factors (k0 = 0.32 kept). Higher = dense / full-width fields print
+      darker, closer to thin dithered areas. ×2 is the current best on no-name paper. 1-bit mode is not affected.</div>
+  </div>
+
+  <div class="card">
+    <h2>Curve</h2>
+    <canvas id="chart" width="560" height="360" aria-label="Gray curve chart"></canvas>
+    <div class="legend">
+      <span><i style="background:var(--amber)"></i>increment c<sub>L</sub></span>
+      <span><i style="background:var(--blue)"></i>Σ darkness (thin)</span>
+      <span><i style="background:var(--red)"></i>Σ + load (full row)</span>
+    </div>
+    <div style="margin-top:20px">
+      <button class="build" id="build" disabled>Build &amp; download firmware</button>
+      <div id="buildinfo" class="note"></div>
+    </div>
+  </div>
+</div>
+
+<footer>
+  3.09–3.11 build the two code caves (clear the roll type on a tagless read, add the per-level delta at the gray
+  setup return) and keep L15 + the 1-bit path; 3.12/3.13 patch the inline constants (no cave room). CRC solved over
+  the reserved vector word at <code>0x0800001C</code>. For flashing/recovery see the Niimbot-B21-Jailbreak notes.
+  Not affiliated with NIIMBOT — for printers you own.
+</footer>
+
+<script>
+/* ---------- baked data ---------- */
+const FWMAP = {"3.09":{"size":122768,"grayConsts":[[47426,1,4],[47458,2,2],[47478,3,2],[47498,4,2],[47508,5,2],[47528,6,2],[47554,7,2],[47576,8,2],[47596,9,2],[47616,10,2],[47642,11,2],[47662,12,2],[47680,13,2],[47706,14,2],[47720,15,2],[47940,2,2],[47960,3,2],[47980,4,2],[47990,5,2],[48008,6,2],[48034,7,2],[48056,8,2],[48076,9,2],[48096,10,2],[48118,11,2],[48138,12,2],[48156,13,2],[48178,14,2]],"loadBlock":74624},"3.10":{"size":122700,"grayConsts":[[47362,1,4],[47394,2,2],[47414,3,2],[47434,4,2],[47444,5,2],[47464,6,2],[47490,7,2],[47512,8,2],[47532,9,2],[47552,10,2],[47578,11,2],[47598,12,2],[47616,13,2],[47642,14,2],[47656,15,2],[47876,2,2],[47896,3,2],[47916,4,2],[47926,5,2],[47944,6,2],[47970,7,2],[47992,8,2],[48012,9,2],[48032,10,2],[48054,11,2],[48074,12,2],[48092,13,2],[48114,14,2]],"loadBlock":74560},"3.11":{"size":122812,"grayConsts":[[47578,1,4],[47610,2,2],[47630,3,2],[47650,4,2],[47660,5,2],[47680,6,2],[47706,7,2],[47728,8,2],[47748,9,2],[47768,10,2],[47794,11,2],[47814,12,2],[47832,13,2],[47858,14,2],[47872,15,2],[48092,2,2],[48112,3,2],[48132,4,2],[48142,5,2],[48160,6,2],[48186,7,2],[48208,8,2],[48228,9,2],[48248,10,2],[48270,11,2],[48290,12,2],[48308,13,2],[48330,14,2]],"loadBlock":74884},"3.12":{"size":121156,"grayConsts":[[47550,1,4],[47582,2,2],[47602,3,2],[47622,4,2],[47632,5,2],[47652,6,2],[47678,7,2],[47700,8,2],[47720,9,2],[47740,10,2],[47766,11,2],[47786,12,2],[47804,13,2],[47830,14,2],[47844,15,2],[48064,2,2],[48084,3,2],[48104,4,2],[48114,5,2],[48132,6,2],[48158,7,2],[48180,8,2],[48200,9,2],[48220,10,2],[48242,11,2],[48262,12,2],[48280,13,2],[48302,14,2]],"loadBlock":74132},"3.13":{"size":121588,"grayConsts":[[47526,1,4],[47558,2,2],[47578,3,2],[47598,4,2],[47608,5,2],[47628,6,2],[47654,7,2],[47676,8,2],[47696,9,2],[47716,10,2],[47742,11,2],[47762,12,2],[47780,13,2],[47806,14,2],[47820,15,2],[48040,2,2],[48060,3,2],[48080,4,2],[48090,5,2],[48108,6,2],[48134,7,2],[48156,8,2],[48176,9,2],[48196,10,2],[48218,11,2],[48238,12,2],[48256,13,2],[48278,14,2]],"loadBlock":74108}};
+const AUTO = {"3.09":{"cave1Off":112856,"cave1":"0cb441f26c73c2f20003002283f850200cbcfaf7a3be","cave2Off":118908,"cave2":"41f26c73c2f2000393f85030022b1cd04cf2e851c2f200010978422902d10ff24c0201e00ff2260241f6b010c2f203000121de264e434c36845b4d1e32f915502c44845301311029f3d3bde8f08f8c000e000900090009000400fffffafff5fff0ffebffebffe6ffdcff00008c0009000400040004000400fafffafff0fff0ffe6ffe6ffe6ffd2ff0000","deltaOff":78,"tagcallOff":57456,"tagBytes":"0df032fc","popOff":47922,"popBytes":"11f0a3ba"},"3.10":{"cave1Off":112792,"cave1":"0cb441f26c73c2f20003002283f850200cbcfaf7a3be","cave2Off":118844,"cave2":"41f26c73c2f2000393f85030022b1cd04cf2e851c2f200010978422902d10ff24c0201e00ff2260241f6b010c2f203000121de264e434c36845b4d1e32f915502c44845301311029f3d3bde8f08f8c000e000900090009000400fffffafff5fff0ffebffebffe6ffdcff00008c0009000400040004000400fafffafff0fff0ffe6ffe6ffe6ffd2ff0000","deltaOff":78,"tagcallOff":57392,"tagBytes":"0df032fc","popOff":47858,"popBytes":"11f0a3ba"},"3.11":{"cave1Off":112892,"cave1":"0cb441f26c73c2f20003002283f850200cbcfaf747bf","cave2Off":118944,"cave2":"41f26c73c2f2000393f85030022b1cd04cf2e851c2f200010978422902d10ff24c0201e00ff2260241f6b010c2f203000121de264e434c36845b4d1e32f915502c44845301311029f3d3bde8f08f8c000e000900090009000400fffffafff5fff0ffebffebffe6ffdcff00008c0009000400040004000400fafffafff0fff0ffe6ffe6ffe6ffd2ff0000","deltaOff":78,"tagcallOff":57360,"tagBytes":"0df074fc","popOff":48074,"popBytes":"11f069ba"}};
+const STOCKA=[20,20,25,25,25,30,35,40,45,50,55,55,60,70,190];   // rev-A c_L, L1..L15
+const STOCKB=[20,25,30,30,30,30,40,40,50,50,60,60,60,80,180];   // rev-B
+const GRAYCUM=[160,34,34,34,34,34,34,34,34,34,34,34,34,34,190];
+const RAMP62=[62,67,71,76,81,85,90,95,99,104,109,113,118,123,190];
+const BASE_PERLEVEL=[0.20,0.19,0.18,0.17,0.16,0.15,0.14];       // the 7 per-level load factors as shipped
+const K0=0.32, H=0x1c, COMP=0x38;
+
+const PRESETS={
+  stock:{curve:STOCKA.slice(),net:1, note:'Reference — gray behaves like the original firmware (bunched, weak on no-name paper).'},
+  '62er':{curve:RAMP62.slice(),net:1, note:'Early ramp (pre-cumulative). Darkness accelerates; saturates fast — kept for comparison.'},
+  L50:{curve:GRAYCUM.slice(),net:0.5, note:'graycum curve, load ×0.5.'},
+  L100:{curve:GRAYCUM.slice(),net:1, note:'graycum curve, load ×1 (stock load term).'},
+  L150:{curve:GRAYCUM.slice(),net:1.5, note:'graycum curve, load ×1.5.'},
+  L200:{curve:GRAYCUM.slice(),net:2, note:'graycum curve, load ×2 — current best on no-name paper.'},
+};
+
+/* ---------- CRC-32 + GF(2) comp-word solver ---------- */
+let CRCT;
+function crc32(buf){
+  if(!CRCT){CRCT=new Uint32Array(256);for(let n=0;n<256;n++){let c=n;for(let k=0;k<8;k++)c=c&1?(0xEDB88320^(c>>>1)):(c>>>1);CRCT[n]=c>>>0;}}
+  let c=0xFFFFFFFF>>>0;
+  for(let i=0;i<buf.length;i++)c=(CRCT[(c^buf[i])&0xFF]^(c>>>8))>>>0;
+  return (c^0xFFFFFFFF)>>>0;
+}
+function solveCRC(b,target){
+  const body=()=>b.subarray(H);
+  for(let i=0;i<4;i++)b[COMP+i]=0;
+  const base=crc32(body()), cols=[];
+  for(let bit=0;bit<32;bit++){b[COMP+(bit>>3)]^=(1<<(bit&7));cols.push((crc32(body())^base)>>>0);b[COMP+(bit>>3)]^=(1<<(bit&7));}
+  let want=(target^base)>>>0, piv={};
+  for(let i=0;i<32;i++){let v=cols[i]>>>0,m=(1<<i)>>>0;
+    for(let p=31;p>=0;p--)if(piv[p]&&((v>>>p)&1)){v=(v^piv[p][0])>>>0;m=(m^piv[p][1])>>>0;}
+    if(v)piv[31-Math.clz32(v)]=[v,m];}
+  let sol=0;
+  for(let p=31;p>=0;p--)if(piv[p]&&((want>>>p)&1)){want=(want^piv[p][0])>>>0;sol=(sol^piv[p][1])>>>0;}
+  if(want!==0)throw new Error('CRC could not be solved');
+  for(let i=0;i<32;i++)if((sol>>>i)&1)b[COMP+(i>>3)]^=(1<<(i&7));
+}
+const h2b=s=>{const a=new Uint8Array(s.length/2);for(let i=0;i<a.length;i++)a[i]=parseInt(s.substr(i*2,2),16);return a;};
+const hex=n=>(n>>>0).toString(16).padStart(8,'0');
+const readU32=(b,o)=>(b[o]|(b[o+1]<<8)|(b[o+2]<<16)|(b[o+3]<<24))>>>0;
+
+/* ---------- state ---------- */
+let S=null; // {name,bytes,ver,isAuto, cL[16], net}
+const $=s=>document.querySelector(s);
+const statusEl=$('#status'),appEl=$('#app'),tbody=$('#curve tbody'),presetBox=$('#presets');
+
+function detect(len){for(const v in FWMAP)if(FWMAP[v].size===len)return v;return null;}
+
+function loadBuf(name,buf){
+  const bytes=new Uint8Array(buf), ver=detect(bytes.length);
+  statusEl.classList.remove('hidden');
+  if(!ver){appEl.classList.add('hidden');S=null;
+    statusEl.innerHTML=`<span class="pill err">unsupported</span> <span>${bytes.length} bytes — not a known B21 Pro image (3.09–3.13).</span>`;return;}
+  const isAuto=ver in AUTO, tgt=readU32(bytes,8), crcOk=crc32(bytes.subarray(H))===tgt;
+  S={name,bytes,ver,isAuto,cL:[0,...GRAYCUM],net:2};   // default to L200
+  statusEl.innerHTML=
+    `<span class="pill ok">${ver}</span>`+
+    `<span class="pill mode">${isAuto?'RFID-aware (auto)':'always-spread'}</span>`+
+    `<span><b>file</b> ${name}</span>`+
+    `<span><b>header crc</b> ${hex(tgt)}</span>`+
+    `<span class="pill ${crcOk?'ok':'warn'}">${crcOk?'crc valid':'crc mismatch'}</span>`;
+  renderPresets(); applyPreset('L200'); appEl.classList.remove('hidden'); $('#build').disabled=false; $('#buildinfo').textContent='';
+}
+
+function renderPresets(){
+  presetBox.innerHTML='';
+  for(const k in PRESETS){const b=document.createElement('button');b.className='presetbtn';b.textContent=k;b.dataset.k=k;
+    b.onclick=()=>applyPreset(k);presetBox.appendChild(b);}
+}
+function applyPreset(k){
+  const p=PRESETS[k]; for(let L=1;L<=15;L++)S.cL[L]=p.curve[L-1]; S.net=p.net;
+  $('#load').value=p.net; $('#presetnote').textContent=p.note;
+  presetBox.querySelectorAll('.presetbtn').forEach(b=>b.classList.toggle('on',b.dataset.k===k));
+  renderTable(); syncLoad(); draw();
+}
+function clearPresetHL(){presetBox.querySelectorAll('.presetbtn').forEach(b=>b.classList.remove('on'));$('#presetnote').textContent='custom curve';}
+
+function renderTable(){
+  tbody.innerHTML='';
+  for(let L=1;L<=15;L++){
+    const tr=document.createElement('tr'); if(L===15)tr.className='l15';
+    tr.innerHTML=`<td>L${L}${L===15?' · full black':''}</td>`+
+      `<td><input type="number" min="1" max="255" value="${S.cL[L]}" data-l="${L}" ${L===15?'disabled':''}></td>`+
+      `<td class="sum" data-sum="${L}"></td><td data-sumf="${L}"></td>`;
+    tbody.appendChild(tr);
+  }
+  tbody.querySelectorAll('input').forEach(inp=>inp.addEventListener('input',e=>{
+    let v=parseInt(e.target.value||'0',10); if(isNaN(v))return; v=Math.max(1,Math.min(255,v));
+    S.cL[+e.target.dataset.l]=v; clearPresetHL(); fillSums(); draw();
+  }));
+  fillSums();
+}
+const LEVEL_FACTOR=[0.32,0.20,0.20,0.20,0.19,0.19,0.18,0.18,0.17,0.17,0.16,0.16,0.15,0.15,0.14,0.14];
+const loadTerm=L=>Math.round(184*LEVEL_FACTOR[L]*S.net);   // ≈ ticks added at a full 576-dot row
+function cumul(){const s=[],sf=[];let a=0,b=0;for(let L=0;L<=15;L++){a+=S.cL[L];b+=S.cL[L]+loadTerm(L);s[L]=a;sf[L]=b;}return{s,sf};}
+function fillSums(){const{s,sf}=cumul();for(let L=1;L<=15;L++){const a=tbody.querySelector(`[data-sum="${L}"]`),c=tbody.querySelector(`[data-sumf="${L}"]`);if(a)a.textContent=s[L];if(c)c.textContent=sf[L];}}
+function syncLoad(){$('#loadval').textContent='×'+S.net.toFixed(2);}
+$('#load').addEventListener('input',e=>{S.net=parseFloat(e.target.value);syncLoad();clearPresetHL();fillSums();draw();});
+
+/* ---------- chart ---------- */
+function draw(){
+  const cv=$('#chart'),ctx=cv.getContext('2d'),W=cv.width,Hc=cv.height,mL=44,mR=46,mT=16,mB=28;
+  ctx.clearRect(0,0,W,Hc);
+  const css=getComputedStyle(document.documentElement),col=n=>css.getPropertyValue(n).trim();
+  const{s,sf}=cumul(),maxInc=Math.max(255,...S.cL.slice(1,16)),maxSum=Math.max(...sf.slice(1,16),1);
+  const x=L=>mL+(W-mL-mR)*(L-1)/14, yI=v=>Hc-mB-(Hc-mT-mB)*v/maxInc, yS=v=>Hc-mB-(Hc-mT-mB)*v/maxSum;
+  ctx.strokeStyle=col('--line');ctx.lineWidth=1;ctx.font='11px '+col('--mono');ctx.textAlign='right';ctx.textBaseline='middle';
+  for(let g=0;g<=4;g++){const yy=mT+(Hc-mT-mB)*g/4;ctx.beginPath();ctx.moveTo(mL,yy);ctx.lineTo(W-mR,yy);ctx.stroke();
+    ctx.fillStyle=col('--amber');ctx.fillText(Math.round(maxInc*(1-g/4)),mL-6,yy);
+    ctx.fillStyle=col('--red');ctx.textAlign='left';ctx.fillText(Math.round(maxSum*(1-g/4)),W-mR+6,yy);ctx.textAlign='right';}
+  const bw=(W-mL-mR)/15*0.5;
+  for(let L=1;L<=15;L++){const xx=x(L)-bw/2,yy=yI(S.cL[L]);ctx.fillStyle=L===15?col('--amber2'):col('--amber');ctx.globalAlpha=.55;ctx.fillRect(xx,yy,bw,Hc-mB-yy);ctx.globalAlpha=1;}
+  const line=(arr,c)=>{ctx.strokeStyle=c;ctx.lineWidth=2;ctx.beginPath();for(let L=1;L<=15;L++){const xx=x(L),yy=yS(arr[L]);L===1?ctx.moveTo(xx,yy):ctx.lineTo(xx,yy);}ctx.stroke();ctx.fillStyle=c;for(let L=1;L<=15;L++){ctx.beginPath();ctx.arc(x(L),yS(arr[L]),2.4,0,7);ctx.fill();}};
+  line(sf,col('--red'));line(s,col('--blue'));
+  ctx.fillStyle=col('--mut');ctx.textAlign='center';ctx.textBaseline='top';for(let L=1;L<=15;L+=2)ctx.fillText('L'+L,x(L),Hc-mB+6);
+}
+window.addEventListener('resize',()=>{if(S)draw();});
+
+/* ---------- build ---------- */
+function build(){
+  if(!S)return;
+  const out=S.bytes.slice(), dv=new DataView(out.buffer), gc=FWMAP[S.ver].grayConsts;
+  if(S.isAuto){
+    const a=AUTO[S.ver];
+    // inline constants reset to rev-specific stock (first 15 = rev A, next 13 = rev B L2..L14)
+    gc.forEach((e,i)=>{const [off,lvl]=e; out[off]=(i<15?STOCKA[lvl-1]:STOCKB[lvl-1])&0xff;});
+    // caves (fixed bytes), then overwrite the int16 delta tables from the curve
+    out.set(h2b(a.cave1), a.cave1Off);
+    out.set(h2b(a.cave2), a.cave2Off);
+    for(let L=1;L<=15;L++){
+      const dA=L===15?0:S.cL[L]-STOCKA[L-1], dB=L===15?0:S.cL[L]-STOCKB[L-1];
+      dv.setInt16(a.cave2Off+a.deltaOff+(L-1)*2, dA, true);
+      dv.setInt16(a.cave2Off+a.deltaOff+30+(L-1)*2, dB, true);
+    }
+    out.set(h2b(a.tagBytes), a.tagcallOff);   // bl cave1
+    out.set(h2b(a.popBytes), a.popOff);        // b.w cave2
+  } else {
+    // 3.12/3.13 — always-spread: write c_L to both rev sets, keep L15
+    gc.forEach(e=>{const [off,lvl]=e; if(lvl>=1&&lvl<=14) out[off]=S.cL[lvl]&0xff;});
+  }
+  // load factors (both paths): k0 kept, 7 per-level × net
+  for(let i=0;i<8;i++) dv.setFloat64(FWMAP[S.ver].loadBlock+i*8, i===0?K0:BASE_PERLEVEL[i-1]*S.net, true);
+  const tgt=readU32(out,8); solveCRC(out,tgt);
+  const ok=crc32(out.subarray(H))===tgt, hdr=out.subarray(0,H).every((b,i)=>b===S.bytes[i]);
+  let diff=0;for(let i=0;i<out.length;i++)if(out[i]!==S.bytes[i])diff++;
+  const curveName=sameArr(S.cL.slice(1,16),GRAYCUM)?'graycum':sameArr(S.cL.slice(1,16),RAMP62)?'spread62':sameArr(S.cL.slice(1,16),STOCKA)?'stock':'custom';
+  const base=S.name.replace(/\.bin$/i,'').replace(/_crcfix$/,'').replace(/_(graycum|grayspread|grayauto|gray|stock|spread62|custom|edit)(_?L?\d*)?$/i,'');
+  const fn=`${base}_${curveName}_L${Math.round(S.net*100)}_crcfix.bin`;
+  const a=document.createElement('a');a.href=URL.createObjectURL(new Blob([out],{type:'application/octet-stream'}));a.download=fn;a.click();
+  setTimeout(()=>URL.revokeObjectURL(a.href),4000);
+  $('#buildinfo').innerHTML=`<span class="pill ${ok&&hdr?'ok':'err'}">${ok&&hdr?'ready to flash':'error'}</span> `+
+    `wrote <span class="mono">${fn}</span> · ${S.isAuto?'RFID-aware':'always-spread'} · crc <span class="mono">${hex(tgt)}</span> · header ${hdr?'unchanged':'CHANGED'} · ${diff} bytes changed`;
+}
+const sameArr=(a,b)=>a.length===b.length&&a.every((x,i)=>x===b[i]);
+$('#build').addEventListener('click',build);
+
+/* ---------- file input ---------- */
+const fileInp=$('#file'),drop=$('#drop');
+fileInp.addEventListener('change',e=>{const f=e.target.files[0];if(f)f.arrayBuffer().then(b=>loadBuf(f.name,b));});
+['dragenter','dragover'].forEach(ev=>drop.addEventListener(ev,e=>{e.preventDefault();drop.classList.add('hot');}));
+['dragleave','drop'].forEach(ev=>drop.addEventListener(ev,e=>{e.preventDefault();drop.classList.remove('hot');}));
+drop.addEventListener('drop',e=>{const f=e.dataTransfer.files[0];if(f)f.arrayBuffer().then(b=>loadBuf(f.name,b));});
+</script>
+</body>
+</html>

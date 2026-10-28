@@ -24,6 +24,31 @@ The patcher supports firmware 3.09, 3.10, 3.11, 3.12 and 3.13.
 The patcher needs Python 3 and nothing else. `--verify` additionally disassembles the patched code
 (requires `pip install capstone`).
 
+## Gray mode: better 16-level grayscale
+
+The B21 Pro can print 16 gray levels, but the stock heat curve is bunched up, so on third-party
+paper only a handful of shades show. `tools/b21graypatch.py` rewrites the per-level heat
+increments and the load compensation of the gray path. The 1-bit path is not touched.
+
+```sh
+pip install capstone
+python3 tools/b21graypatch.py B21_Pro_3.10_noprime10_crcfix.bin --load 2
+# -> B21_Pro_3.10_noprime10_crcfix_graycum_load200_crcfix.bin
+```
+
+- On 3.09 to 3.11 the default mode is RFID-aware: a genuine gray roll keeps the stock curve,
+  a roll without a readable tag gets the new one. On 3.12 and 3.13 (no room for the code caves)
+  the new curve applies to every roll.
+- `--profile graycum` (default) gives a linear darkness ramp, `--load 2` is the setting that
+  worked best on no-name paper. Details and the measurements behind them are in
+  [docs/gray-mode.md](docs/gray-mode.md).
+- `tools/b21_gray_editor.html` does the same in a browser, with a live chart of the curve:
+  open the file locally, load an image, download the patched one. Nothing is uploaded.
+- Both produce byte-identical files; the output keeps the 28-byte header and restores the CRC.
+
+This repository never contains firmware images, neither official nor patched. Download the
+official image yourself and patch it locally.
+
 ## How the throttle works
 
 The relevant state lives in a roll structure in RAM (`0x2000176c` on 3.10):
@@ -150,7 +175,10 @@ b0f4c40f4c0071a0addead4d862b4fc542121ce76fabf9f15e55258e792de1b6  B21_Pro_3.13.b
 
 | Path                 | Content                                                        |
 |----------------------|----------------------------------------------------------------|
-| `tools/b21patch.py`  | the patcher                                                    |
+| `tools/b21patch.py`  | the full-heat patcher (non-RFID rolls)                         |
+| `tools/b21graypatch.py` | gray-mode patcher (curve, load term, RFID-aware caves)      |
+| `tools/b21_gray_editor.html` | the same as a browser tool with a live curve chart    |
+| `docs/gray-mode.md`  | how gray works in the firmware, variants, measurements        |
 | `history.md`         | chronological log of the analysis, including the dead ends    |
 | `rea.md`             | reverse-engineering setup: Ghidra on Apple Silicon, headless import, tooling |
 

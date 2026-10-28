@@ -1,39 +1,45 @@
 #!/usr/bin/env python3
-"""Spread the B21 Pro's 16 gray heat levels so all shades fall in the usable range.
+"""Rework the B21 Pro's 16-level gray heat curve (and its load compensation).
 
-The firmware maps each 4-bit gray level to a thermal strobe time with a fixed set
-of per-level constants, computed in the setup function (around 0x0800b8c0 on 3.10)
-and stored into the strobe structure. The stock curve is bunched up: levels 1-14
-use only ~10-40 % of a full dot and level 15 jumps straight to the 1-bit value.
-On third-party paper, whose colouring threshold is higher, the low levels come out
-blank, so only ~6 of the 16 shades actually print.
+How gray works in the firmware (3.09 - 3.13, found by disassembly + emulation):
 
-This patcher rewrites those constants to a smooth ramp, so all 16 levels land in
-the paper's working range. The firmware keeps applying its own temperature and
-voltage compensation on top; only the per-level base changes.
+* Every gray level L has an increment c_L that the setup function stores into the
+  strobe structure (stride 0xde). Temperature and voltage terms are added on top.
+* The row splitter is thermometric: a dot of level L is written into planes 0..L and
+  every plane fires once for its c_k. Darkness of a level-L dot is therefore
+  proportional to the SUM c_0..c_L, not to c_L. A linear grayscale needs a large c_1
+  and flat increments after it.
+* The strobe time of a plane also gets popcount(plane) * k0 * factor[level] added
+  (current-sag compensation, 8 doubles in a flash pool). Paper tests show the stock
+  value under-compensates; a net factor of about 2 balances dithered photos and bands.
+* Level 15 and the 1-bit path have their own constants and are never touched.
 
-    stock  (3.10, nominal 25 C / 7.8 V / density 3, timer ticks):
-        22 22 27 27 28 34 40 45 52 57 64 64 74 84 204
-    default ramp:
-        52 63 74 84 92 102 112 123 132 143 151 162 168 179 204
+Profiles (--profile):
+    stock    the firmware's own curve (use with --load to change only the load term)
+    graycum  c_1 = 160, c_2..c_14 = 34: linear darkness ramp (current best)
+    ramp62   early ramp 62..123, kept for comparison
+    custom   --curve with 14 values (levels 1..14)
 
-Both the firmware's rev-A and rev-B constant sets are patched, so the result is the
-same ramp regardless of which board revision the printer reports.
+Modes (--mode):
+    spread   write the curve into both board-revision constant sets. Works on every
+             version and on official as well as noprime images.
+    auto     RFID-aware: a genuine gray roll keeps the stock curve, a roll without a
+             readable tag gets the new one. Needs two code caves, so it is limited to
+             3.09 - 3.11. Hook sites and free cave space are checked before writing;
+             tested on printer with b21patch.py output (*_noprime10_crcfix.bin).
+    The default is auto where possible, otherwise spread.
 
 Usage:
-    python3 b21graypatch.py B21_Pro_3.10_noprime10_crcfix.bin
-        -> B21_Pro_3.10_noprime10_grayspread_crcfix.bin
-    python3 b21graypatch.py B21_Pro_3.10.bin -o out.bin
-    python3 b21graypatch.py ... --curve 50,61,72,82,92,102,112,123,132,143,151,162,168,179,190
-    python3 b21graypatch.py ... --verify
+    python3 b21graypatch.py B21_Pro_3.10_noprime10_crcfix.bin --load 2
+    python3 b21graypatch.py B21_Pro_3.12.bin --mode spread --profile graycum --load 2
+    python3 b21graypatch.py B21_Pro_3.13.bin --profile custom --curve 160,34,34,34,34,34,34,34,34,34,34,34,34,34
 
-Run it on an official image or on a *_noprime10_crcfix.bin (b21patch.py output);
-it works on both. Tested on 3.09, 3.10, 3.11, 3.12 and 3.13.
-
-Needs capstone (`pip install capstone`) to locate the constants; the CRC and
-encoding machinery is reused from b21patch.py.
+The header is never touched; the CRC is restored through the reserved vector word, as
+in b21patch.py. Needs capstone (pip install capstone). Flash at your own risk; keep a
+stock image at hand. No firmware image is part of this repository.
 """
 import argparse
+import struct
 import sys
 import zlib
 
@@ -45,13 +51,70 @@ except ImportError:
 from b21patch import BASE, HEADER, COMPENSATE_AT, crc_compensate
 
 # Heat-value slot of each gray level inside the strobe structure (stride 0xde).
-# Level 0 (0x4c) is white and left alone; these are levels 1..15.
 PLANE_OFFSETS = [0x12a, 0x208, 0x2e6, 0x3c4, 0x4a2, 0x580, 0x65e, 0x73c,
                  0x81a, 0x8f8, 0x9d6, 0xab4, 0xb92, 0xc70, 0xd4e]
 
-# Default per-level base constant (c_L). Nominal pulse is c_L plus the firmware's
-# small voltage term, i.e. roughly a linear 52..204 ticks across the 16 levels.
-DEFAULT_CURVE = [50, 61, 72, 82, 92, 102, 112, 123, 132, 143, 151, 162, 168, 179, 190]
+# Stock increments c_L for L1..L15 per board revision (identical in 3.09 - 3.13).
+STOCK_A = [20, 20, 25, 25, 25, 30, 35, 40, 45, 50, 55, 55, 60, 70, 190]
+STOCK_B = [20, 25, 30, 30, 30, 30, 40, 40, 50, 50, 60, 60, 60, 80, 180]
+
+PROFILES = {
+    "stock": STOCK_A[:14],
+    "graycum": [160] + [34] * 13,
+    "ramp62": [62, 67, 71, 76, 81, 85, 90, 95, 99, 104, 109, 113, 118, 123],
+}
+
+# Load term: k0 and the seven per-level factors, as doubles in a flash pool.
+LOAD_K0 = 0.32
+LOAD_FACTORS = [0.20, 0.19, 0.18, 0.17, 0.16, 0.15, 0.14]
+
+# RFID-aware mode: cave bytes and hook sites per version, for noprime images only.
+# cave1 clears the stale roll type before a tag read, cave2 adds per-level int16
+# deltas (rev A table, then rev B table, at delta_at) at the end of the setup function.
+AUTO = {
+    "3.09": dict(
+        size=122768,
+        cave1_at=112856, cave1="0cb441f26c73c2f20003002283f850200cbcfaf7a3be",
+        cave2_at=118908, cave2=(
+            "41f26c73c2f2000393f85030022b1cd04cf2e851c2f200010978422902d1"
+            "0ff24c0201e00ff2260241f6b010c2f203000121de264e434c36845b4d1e"
+            "32f915502c44845301311029f3d3bde8f08f8c000e000900090009000400"
+            "fffffafff5fff0ffebffebffe6ffdcff00008c0009000400040004000400fafffafff0fff0ffe6ffe6ffe6ffd2ff0000"),
+        delta_at=78,
+        tagcall_at=57456, tagcall_new="0df032fc", tagcall_old="08f0e0fa",
+        pop_at=47922, pop_new="11f0a3ba", pop_old="bde8f08f"),
+    "3.10": dict(
+        size=122700,
+        cave1_at=112792, cave1="0cb441f26c73c2f20003002283f850200cbcfaf7a3be",
+        cave2_at=118844, cave2=(
+            "41f26c73c2f2000393f85030022b1cd04cf2e851c2f200010978422902d1"
+            "0ff24c0201e00ff2260241f6b010c2f203000121de264e434c36845b4d1e"
+            "32f915502c44845301311029f3d3bde8f08f8c000e000900090009000400"
+            "fffffafff5fff0ffebffebffe6ffdcff00008c0009000400040004000400fafffafff0fff0ffe6ffe6ffe6ffd2ff0000"),
+        delta_at=78,
+        tagcall_at=57392, tagcall_new="0df032fc", tagcall_old="08f0e0fa",
+        pop_at=47858, pop_new="11f0a3ba", pop_old="bde8f08f"),
+    "3.11": dict(
+        size=122812,
+        cave1_at=112892, cave1="0cb441f26c73c2f20003002283f850200cbcfaf747bf",
+        cave2_at=118944, cave2=(
+            "41f26c73c2f2000393f85030022b1cd04cf2e851c2f200010978422902d1"
+            "0ff24c0201e00ff2260241f6b010c2f203000121de264e434c36845b4d1e"
+            "32f915502c44845301311029f3d3bde8f08f8c000e000900090009000400"
+            "fffffafff5fff0ffebffebffe6ffdcff00008c0009000400040004000400fafffafff0fff0ffe6ffe6ffe6ffd2ff0000"),
+        delta_at=78,
+        tagcall_at=57360, tagcall_new="0df074fc", tagcall_old="08f0c6fb",
+        pop_at=48074, pop_new="11f069ba", pop_old="bde8f08f"),
+}
+
+
+def sig_load_block(body):
+    """Offset of the 8 load-term doubles (stock values), or exit."""
+    sig = struct.pack("<8d", LOAD_K0, *LOAD_FACTORS)
+    hits = [i for i in range(0, len(body) - len(sig), 4) if body[i:i + len(sig)] == sig]
+    if len(hits) != 1:
+        sys.exit("load factor block not found (%d hits) - image already load-patched?" % len(hits))
+    return hits[0]
 
 
 def disasm_all(body):
@@ -86,9 +149,8 @@ def find_setup(ins):
 
 
 def find_constants(ins, start, nextfn):
-    """Map every per-level constant add to (body_offset_of_imm8, level). Both the
-    rev-A and rev-B sets are returned; shared levels (1 and sometimes 15) appear
-    once per occurrence."""
+    """Map every per-level constant add to {body_offset_of_imm8: level}. Both the
+    rev-A and rev-B sets are returned."""
     out = {}
     for j in range(start, nextfn):
         i = ins[j]
@@ -106,75 +168,129 @@ def find_constants(ins, start, nextfn):
                     body_off += 2
                 out[body_off] = level
                 break
-    if len(out) < 20:
-        sys.exit("found only %d gray constants - unsupported firmware?" % len(out))
+    if len(out) != 28:
+        sys.exit("found %d gray constants, expected 28 - unsupported firmware?" % len(out))
     return out
 
 
-def patch(fw, curve):
+def check_image(fw):
     hdr, body = fw[:HEADER], bytearray(fw[HEADER:])
-    import struct
     if struct.unpack_from("<I", hdr, 4)[0] != len(body):
         sys.exit("header length field does not match - not a B21 Pro image?")
     crc = struct.unpack_from("<I", hdr, 8)[0]
     if zlib.crc32(body) != crc:
         sys.exit("body CRC does not match header - corrupt image?")
-    # The reserved vector slot at COMPENSATE_AT is the CRC fix-up word. On a stock
-    # image it is zero; on a b21patch.py output it already holds noprime's value.
-    # crc_compensate zeroes and re-solves it for all edits combined, so either is fine.
+    return hdr, body, crc
 
+
+def patch(fw, curve, load, mode):
+    hdr, body, crc = check_image(fw)
     ins = disasm_all(body)
     start, pop, nextfn = find_setup(ins)
     consts = find_constants(ins, start, nextfn)
-    for body_off, level in consts.items():
-        new = curve[level - 1]
-        if not 0 <= new <= 255:
-            sys.exit("curve value for level %d out of range: %d" % (level, new))
-        body[body_off] = new
+
+    stock = curve == PROFILES["stock"]          # only the load term changes
+    auto = AUTO.get(next((v for v, a in AUTO.items() if len(fw) == a["size"]), None)) \
+        if mode in ("auto", "best") and not stock else None
+    if mode == "auto" and auto is None and not stock:
+        sys.exit("auto mode needs a 3.09 - 3.11 image (official or b21patch.py output)")
+    if auto is not None:
+        for at, old in ((auto["tagcall_at"], auto["tagcall_old"]), (auto["pop_at"], auto["pop_old"])):
+            if body[at - HEADER:at - HEADER + 4].hex() != old:
+                if mode == "auto":
+                    sys.exit("hook site 0x%x does not match - unknown image" % at)
+                auto = None
+                break
+        else:
+            for at, key in ((auto["cave1_at"], "cave1"), (auto["cave2_at"], "cave2")):
+                n = len(bytes.fromhex(auto[key]))
+                if any(body[at - HEADER:at - HEADER + n]):
+                    if mode == "auto":
+                        sys.exit("cave space at 0x%x is not free" % at)
+                    auto = None
+                    break
+
+    # offsets in file terms for the dicts above, in body terms for the patching below
+    ordered = sorted(consts)
+    if auto is not None:
+        # inline constants back to the rev-specific stock values: the first 15 are the
+        # rev-A set, the following 13 are rev B (levels 2..14)
+        for k, off in enumerate(ordered):
+            lvl = consts[off]
+            body[off] = (STOCK_A if k < 15 else STOCK_B)[lvl - 1]
+        c1 = bytes.fromhex(auto["cave1"])
+        c2 = bytearray(bytes.fromhex(auto["cave2"]))
+        for L in range(1, 15):
+            struct.pack_into("<h", c2, auto["delta_at"] + (L - 1) * 2, curve[L - 1] - STOCK_A[L - 1])
+            struct.pack_into("<h", c2, auto["delta_at"] + 30 + (L - 1) * 2, curve[L - 1] - STOCK_B[L - 1])
+        # L15 deltas (index 14) stay 0: level 15 is not changed
+        struct.pack_into("<h", c2, auto["delta_at"] + 28, 0)
+        struct.pack_into("<h", c2, auto["delta_at"] + 58, 0)
+        body[auto["cave1_at"] - HEADER:auto["cave1_at"] - HEADER + len(c1)] = c1
+        body[auto["cave2_at"] - HEADER:auto["cave2_at"] - HEADER + len(c2)] = c2
+        body[auto["tagcall_at"] - HEADER:auto["tagcall_at"] - HEADER + 4] = bytes.fromhex(auto["tagcall_new"])
+        body[auto["pop_at"] - HEADER:auto["pop_at"] - HEADER + 4] = bytes.fromhex(auto["pop_new"])
+        used = "auto"
+    elif stock:
+        used = "stock"
+    else:
+        for off, lvl in consts.items():
+            if lvl <= 14:
+                body[off] = curve[lvl - 1]
+        used = "spread"
+
+    if load != 1.0:
+        lb = sig_load_block(body)
+        vals = [LOAD_K0] + [f * load for f in LOAD_FACTORS]
+        body[lb:lb + 64] = struct.pack("<8d", *vals)
 
     crc_compensate(body, COMPENSATE_AT, crc)
-    info = dict(setup=ins[start].address, count=len(consts),
-                offsets=sorted(consts), levels=consts)
-    return hdr + bytes(body), info
+    return hdr + bytes(body), dict(setup=ins[start].address, mode=used, consts=consts)
 
 
 def main():
-    ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    ap = argparse.ArgumentParser(description=__doc__.splitlines()[0],
+                                 formatter_class=argparse.RawDescriptionHelpFormatter,
+                                 epilog="See the module docstring (python3 -c 'import b21graypatch; print(b21graypatch.__doc__)').")
     ap.add_argument("firmware", help="official B21_Pro_<ver>.bin or a *_noprime10_crcfix.bin")
     ap.add_argument("-o", "--output")
-    ap.add_argument("--curve", help="15 comma-separated per-level base constants (levels 1..15)")
-    ap.add_argument("--verify", action="store_true", help="disassemble the patched constants")
+    ap.add_argument("--profile", choices=list(PROFILES) + ["custom"], default="graycum")
+    ap.add_argument("--curve", help="14 comma-separated increments c_1..c_14 (with --profile custom)")
+    ap.add_argument("--load", type=float, default=1.0,
+                    help="net load-term factor (1 = stock, 2 = current best on third-party paper)")
+    ap.add_argument("--mode", choices=["best", "auto", "spread"], default="best")
     a = ap.parse_args()
 
-    if a.curve:
+    if a.profile == "custom":
+        if not a.curve:
+            sys.exit("--profile custom needs --curve")
         curve = [int(x, 0) for x in a.curve.split(",")]
-        if len(curve) != 15:
-            sys.exit("--curve needs exactly 15 values (levels 1..15)")
+        if len(curve) != 14:
+            sys.exit("--curve needs exactly 14 values (levels 1..14; level 15 is never changed)")
     else:
-        curve = DEFAULT_CURVE
+        curve = PROFILES[a.profile]
+    if any(not 0 <= c <= 255 for c in curve):
+        sys.exit("curve values must be 0..255")
+    if not 0 < a.load <= 4:
+        sys.exit("--load must be in (0, 4]")
 
     fw = open(a.firmware, "rb").read()
-    out, info = patch(fw, curve)
+    out, info = patch(fw, curve, a.load, a.mode)
     if a.output:
         name = a.output
-    elif a.firmware.endswith("_crcfix.bin"):
-        name = a.firmware[:-len("_crcfix.bin")] + "_grayspread_crcfix.bin"
     else:
-        name = a.firmware.rsplit(".", 1)[0] + "_grayspread_crcfix.bin"
+        stem = a.firmware[:-len("_crcfix.bin")] if a.firmware.endswith("_crcfix.bin") else a.firmware.rsplit(".", 1)[0]
+        name = "%s_%s%s_crcfix.bin" % (stem, a.profile,
+                                       "_load%d" % round(a.load * 100) if a.load != 1.0 else "")
     open(name, "wb").write(out)
 
+    diff = sum(1 for x, y in zip(fw, out) if x != y)
     print("setup   %08x  gray heat setup function" % info["setup"])
-    print("curve   %s" % " ".join(str(c) for c in curve))
-    print("patched %d constants (rev-A + rev-B)" % info["count"])
-    print("crc32   %08x (unchanged), header unchanged" % (zlib.crc32(out[HEADER:]) & 0xffffffff))
+    print("mode    %s%s" % (info["mode"], "  (stock curve for genuine gray rolls)" if info["mode"] == "auto" else ""))
+    print("curve   %s  (c_1..c_14)" % " ".join(map(str, curve)))
+    print("load    x%g" % a.load)
+    print("changed %d bytes, header unchanged, crc32 %08x" % (diff, zlib.crc32(out[HEADER:]) & 0xffffffff))
     print("wrote   %s" % name)
-    if a.verify:
-        body = out[HEADER:]
-        md = capstone.Cs(capstone.CS_ARCH_ARM, capstone.CS_MODE_THUMB | capstone.CS_MODE_MCLASS)
-        for off in info["offsets"]:
-            start = off - 2 if body[off + 1] & 0xf0 != 0x30 else off   # add.w vs adds
-            ins = next(md.disasm(bytes(body[start:start + 4]), BASE + start))
-            print("  L%-2d %08x  %s %s" % (info["levels"][off], ins.address, ins.mnemonic, ins.op_str))
 
 
 if __name__ == "__main__":
